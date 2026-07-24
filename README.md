@@ -14,8 +14,8 @@ Create and activate a virtual environment, then install dependencies.
 **PowerShell:**
 
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
@@ -28,8 +28,8 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 **Command Prompt (cmd.exe):**
 
 ```cmd
-python -m venv venv
-venv\Scripts\activate.bat
+python -m venv .venv
+.venv\Scripts\activate.bat
 pip install -r requirements.txt
 ```
 
@@ -38,7 +38,7 @@ To leave the virtual environment later, run `deactivate`.
 ## Streamlit app
 
 ```bash
-streamlit run app.py
+streamlit run app.py --server.port 8508
 ```
 
 1. Confirm the source/output folders in the sidebar (defaults to the paths above) and click **Build / Refresh index**.
