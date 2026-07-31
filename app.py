@@ -23,7 +23,9 @@ if "results" not in st.session_state:
 
 st.title("🖼️ Image Picker Automation")
 st.caption(
-    "Search the images folder for the names you give it, and copy any matches to the output folder."
+    "Search the images folder for the keywords you give it, and copy every matching file "
+    '(e.g. "batman" matches batman_01.jpg and key_batman_01.png) to the output folder. '
+    "Matching is case-insensitive."
 )
 
 # ---------------------------------------------------------------------------
@@ -66,23 +68,23 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Main: input names
 # ---------------------------------------------------------------------------
-st.subheader("1. Provide image names")
+st.subheader("1. Provide keywords")
 
-tab_paste, tab_upload = st.tabs(["Paste names", "Upload a list"])
+tab_paste, tab_upload = st.tabs(["Paste keywords", "Upload a list"])
 
 pasted_text = ""
 uploaded_names: list[str] = []
 
 with tab_paste:
     pasted_text = st.text_area(
-        "One image name per line (extension optional)",
+        "One keyword per line — matches any filename containing it (case-insensitive)",
         height=200,
-        placeholder="IMG_0001\nIMG_0002.jpg\nproduct_photo_15",
+        placeholder="batman\nIMG_0001\nproduct_photo_15",
     )
 
 with tab_upload:
     uploaded_file = st.file_uploader(
-        "Upload a .txt or .csv file with one name per line/row", type=["txt", "csv"]
+        "Upload a .txt or .csv file with one keyword per line/row", type=["txt", "csv"]
     )
     if uploaded_file is not None:
         raw = uploaded_file.read().decode("utf-8-sig")
@@ -136,50 +138,67 @@ if run_clicked:
 # ---------------------------------------------------------------------------
 if st.session_state.results:
     results = st.session_state.results
-    found_statuses = {
-        auto.STATUS_COPIED,
-        auto.STATUS_MULTIPLE,
-        auto.STATUS_ALREADY_EXISTS,
-    }
+    found_statuses = {auto.STATUS_COPIED, auto.STATUS_ALREADY_EXISTS}
 
-    total = len(results)
+    total_keywords = len(results)
     found = sum(1 for r in results if r.status in found_statuses)
     not_found = sum(1 for r in results if r.status == auto.STATUS_NOT_FOUND)
     errors = sum(1 for r in results if r.status == auto.STATUS_ERROR)
+    total_files = sum(len(r.matched_files) for r in results)
 
     st.subheader("3. Results")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total requested", total)
-    col2.metric("Found & copied", found)
-    col3.metric("Not found", not_found)
-    col4.metric("Errors", errors)
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("Keywords searched", total_keywords)
+    col2.metric("Keywords matched", found)
+    col3.metric("Keywords not found", not_found)
+    col4.metric("Keyword errors", errors)
+    col5.metric("Files matched", total_files)
 
-    df = pd.DataFrame(
-        [
-            {
-                "Requested name": r.requested_name,
-                "Status": r.status,
-                "Matched file": str(r.matched_files[0]) if r.matched_files else "",
-                "Copied to": str(r.copied_to) if r.copied_to else "",
-                "Other matches": (
-                    len(r.matched_files) - 1 if len(r.matched_files) > 1 else 0
-                ),
-            }
-            for r in results
-        ]
-    )
+    # One row per matched file, so a keyword like "batman" that matches
+    # several files (batman_01.jpg, key_batman_01.png, ...) shows each of
+    # them individually rather than only the first.
+    rows = []
+    for r in results:
+        if not r.matched_files:
+            rows.append(
+                {
+                    "Keyword": r.requested_name,
+                    "File": "",
+                    "Status": auto.STATUS_NOT_FOUND,
+                    "Copied to": "",
+                    "Detail": "",
+                }
+            )
+            continue
+        for outcome in r.outcomes:
+            rows.append(
+                {
+                    "Keyword": r.requested_name,
+                    "File": outcome.source.name,
+                    "Status": outcome.status,
+                    "Copied to": (
+                        str(outcome.destination) if outcome.destination else ""
+                    ),
+                    "Detail": outcome.detail,
+                }
+            )
+
+    df = pd.DataFrame(rows)
 
     def _highlight_status(row: pd.Series) -> list[str]:
-        color = ""
+        # Explicit dark text color alongside each pale background — Streamlit's
+        # dark theme otherwise renders default light text on these light
+        # backgrounds, which is unreadable.
+        style = ""
         if row["Status"] == auto.STATUS_NOT_FOUND:
-            color = "background-color: #ffe0e0"
+            style = "background-color: #ffe0e0; color: #1a1a1a"
         elif row["Status"] == auto.STATUS_ERROR:
-            color = "background-color: #ffcccc"
-        elif row["Status"] in (auto.STATUS_MULTIPLE, "Found (multiple)"):
-            color = "background-color: #fff5cc"
+            style = "background-color: #ffcccc; color: #1a1a1a"
+        elif row["Status"] == auto.STATUS_ALREADY_EXISTS:
+            style = "background-color: #fff5cc; color: #1a1a1a"
         elif row["Status"] == auto.STATUS_COPIED:
-            color = "background-color: #e0ffe0"
-        return [color] * len(row)
+            style = "background-color: #e0ffe0; color: #1a1a1a"
+        return [style] * len(row)
 
     st.dataframe(
         df.style.apply(_highlight_status, axis=1), use_container_width=True, height=400
@@ -194,7 +213,7 @@ if st.session_state.results:
     )
 
     if not_found:
-        with st.expander(f"Names not found ({not_found})"):
+        with st.expander(f"Keywords not found ({not_found})"):
             st.code(
                 "\n".join(
                     r.requested_name

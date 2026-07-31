@@ -1,14 +1,15 @@
 """
 Core logic for the Image Picker Automation tool.
 
-Given a list of image names (with or without extension), search a source
-folder (recursively) for files matching those names and copy the matches
-into an output folder.
+Given a list of keywords/names, search a source folder (recursively) for
+every image file whose name *contains* that keyword and copy all matches
+into an output folder. Matching is always case-insensitive, e.g. "batman"
+matches "batman_01.jpg", "key_batman_01.png" and "BATMAN_cover.PNG" alike.
 
 Can be used as a library (import and call `run`) or as a standalone CLI:
 
     python automation.py --names names.txt
-    python automation.py --names "img001,img002,img003"
+    python automation.py --names "batman,img001,product_photo_15"
 """
 
 from __future__ import annotations
@@ -54,9 +55,18 @@ DRIVE_UNC_MAP = {
 
 STATUS_COPIED = "Copied"
 STATUS_ALREADY_EXISTS = "Already in output"
-STATUS_MULTIPLE = "Multiple matches (copied first)"
 STATUS_NOT_FOUND = "Not found"
 STATUS_ERROR = "Error"
+
+
+@dataclass
+class FileOutcome:
+    """What happened when copying one matched file."""
+
+    source: Path
+    destination: Path | None = None
+    status: str = ""
+    detail: str = ""
 
 
 @dataclass
@@ -64,8 +74,7 @@ class SearchResult:
     requested_name: str
     status: str
     matched_files: list[Path] = field(default_factory=list)
-    copied_to: Path | None = None
-    detail: str = ""
+    outcomes: list[FileOutcome] = field(default_factory=list)
 
 
 def resolve_path(path: str | Path) -> Path:
@@ -85,34 +94,33 @@ def resolve_path(path: str | Path) -> Path:
 def build_file_index(
     source_dir: str | Path,
     extensions: set[str] | None = None,
-) -> dict[str, list[Path]]:
+) -> list[tuple[str, Path]]:
     """
-    Walk `source_dir` recursively and build an index mapping the lowercase
-    filename stem (no extension) -> list of matching file paths.
+    Walk `source_dir` recursively and return a flat list of
+    (lowercase filename stem, path) for every image file found.
 
     Doing one full walk up front is far faster than re-scanning the folder
     once per requested name, especially over a network share.
     """
     extensions = extensions or IMAGE_EXTENSIONS
     source_path = resolve_path(source_dir)
-    index: dict[str, list[Path]] = {}
 
     if not source_path.exists():
         raise FileNotFoundError(f"Source folder not found: {source_path}")
 
+    index: list[tuple[str, Path]] = []
     for root, _dirs, files in os.walk(source_path):
         for filename in files:
             file_path = Path(root) / filename
             if file_path.suffix.lower() not in extensions:
                 continue
-            stem_key = file_path.stem.strip().lower()
-            index.setdefault(stem_key, []).append(file_path)
+            index.append((file_path.stem.strip().lower(), file_path))
 
     return index
 
 
 def _lookup_key(name: str) -> str:
-    """Normalize a requested name to match index keys (strip extension if present)."""
+    """Normalize a requested keyword (case-insensitive, extension optional)."""
     stripped = name.strip()
     candidate = Path(stripped)
     if candidate.suffix.lower() in IMAGE_EXTENSIONS:
@@ -122,22 +130,24 @@ def _lookup_key(name: str) -> str:
 
 def find_images(
     names: list[str],
-    index: dict[str, list[Path]],
+    index: list[tuple[str, Path]],
 ) -> list[SearchResult]:
-    """Match requested names against a pre-built file index (no copying)."""
+    """
+    Match requested keywords against a pre-built file index (no copying).
+    A keyword matches any file whose name contains it, case-insensitively.
+    """
     results: list[SearchResult] = []
     for raw_name in names:
         name = raw_name.strip()
         if not name:
             continue
         key = _lookup_key(name)
-        matches = index.get(key, [])
-        if not matches:
-            results.append(SearchResult(name, STATUS_NOT_FOUND))
-        elif len(matches) == 1:
-            results.append(SearchResult(name, "Found", matches))
-        else:
-            results.append(SearchResult(name, "Found (multiple)", matches))
+        matches = sorted(
+            (path for stem, path in index if key in stem),
+            key=lambda p: str(p).lower(),
+        )
+        status = "Found" if matches else STATUS_NOT_FOUND
+        results.append(SearchResult(name, status, matches))
     return results
 
 
@@ -146,31 +156,36 @@ def copy_result(
     output_dir: str | Path,
     overwrite: bool = False,
 ) -> SearchResult:
-    """Copy the (first) matched file for a single SearchResult into output_dir."""
-    output_path = resolve_path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-
+    """Copy every file matched for this keyword into output_dir."""
     if not result.matched_files:
         result.status = STATUS_NOT_FOUND
         return result
 
-    source_file = result.matched_files[0]
-    destination = output_path / source_file.name
+    output_path = resolve_path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    if destination.exists() and not overwrite:
-        result.status = STATUS_ALREADY_EXISTS
-        result.copied_to = destination
-        return result
+    for source_file in result.matched_files:
+        destination = output_path / source_file.name
+        if destination.exists() and not overwrite:
+            result.outcomes.append(
+                FileOutcome(source_file, destination, STATUS_ALREADY_EXISTS)
+            )
+            continue
+        try:
+            shutil.copy2(source_file, destination)
+            result.outcomes.append(FileOutcome(source_file, destination, STATUS_COPIED))
+        except OSError as exc:
+            result.outcomes.append(
+                FileOutcome(source_file, None, STATUS_ERROR, str(exc))
+            )
 
-    try:
-        shutil.copy2(source_file, destination)
-        result.copied_to = destination
-        result.status = (
-            STATUS_MULTIPLE if len(result.matched_files) > 1 else STATUS_COPIED
-        )
-    except OSError as exc:
+    statuses = {o.status for o in result.outcomes}
+    if STATUS_ERROR in statuses:
         result.status = STATUS_ERROR
-        result.detail = str(exc)
+    elif statuses == {STATUS_ALREADY_EXISTS}:
+        result.status = STATUS_ALREADY_EXISTS
+    else:
+        result.status = STATUS_COPIED
 
     return result
 
@@ -180,11 +195,12 @@ def run(
     source_dir: str | Path = DEFAULT_SOURCE_DIR,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     overwrite: bool = False,
-    index: dict[str, list[Path]] | None = None,
+    index: list[tuple[str, Path]] | None = None,
 ) -> list[SearchResult]:
     """
     End-to-end: build (or reuse) an index of `source_dir`, match `names`
-    against it, and copy every match into `output_dir`.
+    against it (by substring, case-insensitive), and copy every match into
+    `output_dir`.
     """
     if index is None:
         index = build_file_index(source_dir)
@@ -202,11 +218,11 @@ def _read_names_from_file(path: str) -> list[str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Find and copy images by name.")
+    parser = argparse.ArgumentParser(description="Find and copy images by keyword.")
     parser.add_argument(
         "--names",
         required=True,
-        help="Comma-separated names, or path to a .txt file with one name per line.",
+        help="Comma-separated keywords, or path to a .txt file with one keyword per line.",
     )
     parser.add_argument(
         "--source", default=DEFAULT_SOURCE_DIR, help="Source images folder."
@@ -228,29 +244,28 @@ def main() -> int:
     print(f"Indexing '{args.source}' ...")
     start = time.time()
     index = build_file_index(args.source)
-    print(
-        f"Indexed {sum(len(v) for v in index.values())} image files in {time.time() - start:.1f}s"
-    )
+    print(f"Indexed {len(index)} image files in {time.time() - start:.1f}s")
 
     results = run(
         names, args.source, args.output, overwrite=args.overwrite, index=index
     )
 
     found = sum(
-        1
-        for r in results
-        if r.status in (STATUS_COPIED, STATUS_MULTIPLE, STATUS_ALREADY_EXISTS)
+        1 for r in results if r.status in (STATUS_COPIED, STATUS_ALREADY_EXISTS)
     )
     not_found = sum(1 for r in results if r.status == STATUS_NOT_FOUND)
     errors = sum(1 for r in results if r.status == STATUS_ERROR)
 
-    print(f"\n{'Name':40} {'Status':30} {'File'}")
+    print(f"\n{'Keyword':30} {'Status':20} {'Matched files'}")
     for r in results:
-        file_str = str(r.copied_to or (r.matched_files[0] if r.matched_files else ""))
-        print(f"{r.requested_name:40} {r.status:30} {file_str}")
+        files_str = (
+            ", ".join(f.name for f in r.matched_files) if r.matched_files else ""
+        )
+        print(f"{r.requested_name:30} {r.status:20} {files_str}")
 
     print(
-        f"\nDone. Found/copied: {found}  Not found: {not_found}  Errors: {errors}  Total: {len(results)}"
+        f"\nDone. Found/copied: {found}  Not found: {not_found}  Errors: {errors}  "
+        f"Total keywords: {len(results)}"
     )
     return 0 if not_found == 0 and errors == 0 else 1
 
