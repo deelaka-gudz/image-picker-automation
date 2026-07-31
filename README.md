@@ -2,8 +2,8 @@
 
 Streamlit app + CLI script that takes a list of image names, searches for them in a source folder, and copies any matches into an output folder.
 
-- Source folder: `S:\Ammar - Anuja\Image Fetch Tool\Images`
-- Output folder: `S:\Ammar - Anuja\Image Fetch Tool\Out`
+- Source folder: `\\MBC-NT01\Documents\Ammar - Anuja\Image Fetch Tool\Images`
+- Output folder: `\\MBC-NT01\Documents\Ammar - Anuja\Image Fetch Tool\Out`
 
 Matching is case-insensitive and works whether or not you include the file extension (e.g. `IMG_0001` matches `img_0001.JPG`). The source folder is scanned recursively, including subfolders.
 
@@ -65,7 +65,7 @@ cd /d "%~dp0"
 2. **General** tab:
    - Name it (e.g. `Image Picker Streamlit App`)
    - Check **Run whether user is logged on or not**
-   - Set the account to your own Windows user, not `SYSTEM` (needed for access to the `S:` network share)
+   - Set the account to your own Windows user, not `SYSTEM` (needed for access to the `\\MBC-NT01\Documents` network share)
 3. **Triggers** tab → New:
    - Begin the task: **At startup** (no time/day settings needed — fires once per boot)
 4. **Actions** tab → New:

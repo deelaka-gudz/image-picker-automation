@@ -24,8 +24,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Default locations (as given). Override via CLI args or the Streamlit app.
 # ---------------------------------------------------------------------------
-DEFAULT_SOURCE_DIR = r"S:\Ammar - Anuja\Image Fetch Tool\Images"
-DEFAULT_OUTPUT_DIR = r"S:\Ammar - Anuja\Image Fetch Tool\Out"
+DEFAULT_SOURCE_DIR = r"\\MBC-NT01\Documents\Ammar - Anuja\Image Fetch Tool\Images"
+DEFAULT_OUTPUT_DIR = r"\\MBC-NT01\Documents\Ammar - Anuja\Image Fetch Tool\Out"
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -44,6 +44,14 @@ IMAGE_EXTENSIONS = {
     ".svg",
 }
 
+# Mapped network drives -> their real UNC path, so a user can type "S:\..."
+# or "M:\..." and it resolves correctly even on a machine where that drive
+# letter isn't mapped (e.g. a fresh Task Scheduler session).
+DRIVE_UNC_MAP = {
+    "s": r"\\MBC-NT01\Documents",
+    "m": r"\\MBC-NT01\Management",
+}
+
 STATUS_COPIED = "Copied"
 STATUS_ALREADY_EXISTS = "Already in output"
 STATUS_MULTIPLE = "Multiple matches (copied first)"
@@ -60,6 +68,20 @@ class SearchResult:
     detail: str = ""
 
 
+def resolve_path(path: str | Path) -> Path:
+    """
+    Map a `S:\\...` or `M:\\...` path to its underlying UNC path
+    (`\\\\MBC-NT01\\Documents\\...` / `\\\\MBC-NT01\\Management\\...`).
+    Any other path (already-UNC, a different drive, etc.) is left as-is.
+    """
+    text = str(path).strip()
+    if len(text) >= 2 and text[1] == ":" and text[0].isalpha():
+        unc_root = DRIVE_UNC_MAP.get(text[0].lower())
+        if unc_root:
+            return Path(unc_root + text[2:])
+    return Path(text)
+
+
 def build_file_index(
     source_dir: str | Path,
     extensions: set[str] | None = None,
@@ -72,7 +94,7 @@ def build_file_index(
     once per requested name, especially over a network share.
     """
     extensions = extensions or IMAGE_EXTENSIONS
-    source_path = Path(source_dir)
+    source_path = resolve_path(source_dir)
     index: dict[str, list[Path]] = {}
 
     if not source_path.exists():
@@ -125,7 +147,7 @@ def copy_result(
     overwrite: bool = False,
 ) -> SearchResult:
     """Copy the (first) matched file for a single SearchResult into output_dir."""
-    output_path = Path(output_dir)
+    output_path = resolve_path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     if not result.matched_files:
